@@ -1,0 +1,13 @@
+[project]
+name = "adv-python-proj"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dash>=4.1.0",
+    "dash-bootstrap-components>=2.0.4",
+    "dash-mantine-components>=2.7.0",
+    "pandas>=3.0.2",
+    "plotly>=6.7.0",
+]
