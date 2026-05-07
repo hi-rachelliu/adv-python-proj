@@ -1,27 +1,12 @@
 CATEGORIES = [
-    "Groceries",
-    "Food",
-    "Housing",
-    "Utilities",
-    "Gifts",
-    "Travel",
-    "Income",
-    "Other",
+    "groceries",
+    "food",
+    "housing",
+    "utilities",
+    "gifts",
+    "travel",
+    "income",
+    "other",
 ]
 
-ATTRIBUTES = ["Date", "Amount", "Item", "Category"]
-
-MONTHS = {
-    1: "Jan",
-    2: "Feb",
-    3: "Mar",
-    4: "Apr",
-    5: "May",
-    6: "Jun",
-    7: "Jul",
-    8: "Aug",
-    9: "Sep",
-    10: "Oct",
-    11: "Nov",
-    12: "Dec",
-}
+ATTRIBUTES = ["date", "amount", "item", "category"]

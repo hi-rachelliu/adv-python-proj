@@ -11,7 +11,7 @@ from config import CATEGORIES
 # external_stylesheets=[dbc.themes.SKETCHY]
 
 app = Dash()
-budget = Budget()
+row_id = 0
 
 
 def generate_empty_row(restart: bool = False) -> html.Div:
@@ -20,16 +20,17 @@ def generate_empty_row(restart: bool = False) -> html.Div:
     """
 
     if restart:
-        budget.row_id = 0
+        global row_id
+        row_id = 0
     return html.Div(
         className="transaction-row",
-        id={"type": "row", "index": budget.row_id},
+        id={"type": "row", "index": row_id},
         children=[
             html.Div(
                 [
                     html.Label("Date"),
                     dcc.DatePickerSingle(
-                        id={"type": "date-input", "index": budget.row_id},
+                        id={"type": "date-input", "index": row_id},
                         date=datetime.today().strftime("%Y-%m-%d"),
                     ),
                 ]
@@ -38,7 +39,7 @@ def generate_empty_row(restart: bool = False) -> html.Div:
                 [
                     html.Label("Amount (in dollars)"),
                     dcc.Input(
-                        id={"type": "amount-input", "index": budget.row_id},
+                        id={"type": "amount-input", "index": row_id},
                         type="number",
                         placeholder=12,
                         required=True,
@@ -49,7 +50,7 @@ def generate_empty_row(restart: bool = False) -> html.Div:
                 [
                     html.Label("Item"),
                     dcc.Input(
-                        id={"type": "item-input", "index": budget.row_id},
+                        id={"type": "item-input", "index": row_id},
                         type="text",
                         placeholder="Pizza with friends",
                         required=True,
@@ -60,7 +61,7 @@ def generate_empty_row(restart: bool = False) -> html.Div:
                 [
                     html.Label("Category"),
                     dcc.Dropdown(
-                        id={"type": "category-input", "index": budget.row_id},
+                        id={"type": "category-input", "index": row_id},
                         options=[{"label": cat, "value": cat} for cat in CATEGORIES],
                         placeholder="> Select",
                     ),
@@ -68,7 +69,7 @@ def generate_empty_row(restart: bool = False) -> html.Div:
             ),
             html.Button(
                 "- Delete Row",
-                id={"type": "delete-row", "index": budget.row_id},
+                id={"type": "delete-row", "index": row_id},
                 n_clicks=0,
             )
             if not restart
@@ -98,21 +99,23 @@ def transaction_elements() -> list[Component]:
     ]
 
 
-def import_csv_elements() -> list[Component]:
+def from_csv_elements() -> list[Component]:
     """
     Returns a list of HTML elements, for rendering the import csv section
     """
     return [
         html.H2("or export from csv:"),
+        html.Strong("This overwrites any existing transactions!"),
+        html.P("Please use commas as your delimiter."),
         html.P(
-            "Dates must be formatted as %Y-%m-%d, that is, May 1st, 2026 becomes 2026-05-01."
+            "Dates must be formatted as %Y-%m-%d. For example, May 1st, 2026 becomes 2026-05-01."
         ),
         html.P(
-            "Columns must be: Date, Amount, Item, Category (uppercase, in this exact order)."
+            "Columns must include: Date, Amount, Item, Category (case insensitive)."
         ),
         html.P("""In the Category column, values can only be one of the following: 
                "Groceries", "Food", "Housing", "Utilities", "Gifts", "Travel", 
-               "Income", "Other"."""),
+               "Income", or "Other" (case insensitive)."""),
         dcc.Upload(
             id="upload-csv",
             children=html.Div(
@@ -185,9 +188,10 @@ def spending_income_chart_elements() -> list[Component]:
 
 app.layout = dmc.MantineProvider(
     children=[
+        dcc.Store(id="df-state"),
         html.H1("my budget app/data"),
         *transaction_elements(),
-        *import_csv_elements(),
+        *from_csv_elements(),
         html.H1("my budget app/summary"),
         *pie_chart_elements(),
         html.H2("spending, month to month"),
@@ -206,16 +210,18 @@ def generate_expenses_incomes_output(budget: Budget):
 
     if expenses_df is not None:
         # modify a copy of expenses data to be more readable
-        expenses_df["Date"] = expenses_df["Date"].apply(
+        expenses_df["date"] = expenses_df["date"].apply(
             lambda x: x.strftime("%Y-%m-%d")
         )
-        expenses_df["Amount"] = expenses_df["Amount"].apply(lambda x: f"${x}")
+        expenses_df["amount"] = expenses_df["amount"].apply(lambda x: f"${x}")
+        expenses_df.columns = expenses_df.columns.str.capitalize()
 
     incomes_df = budget.get_all_incomes()
     if incomes_df is not None:
         # modify a copy of incomes data to be more readable
-        incomes_df["Date"] = incomes_df["Date"].apply(lambda x: x.strftime("%Y-%m-%d"))
-        incomes_df["Amount"] = incomes_df["Amount"].apply(lambda x: f"${x}")
+        incomes_df["date"] = incomes_df["date"].apply(lambda x: x.strftime("%Y-%m-%d"))
+        incomes_df["amount"] = incomes_df["amount"].apply(lambda x: f"${x}")
+        incomes_df.columns = incomes_df.columns.str.capitalize()
 
     total_expense, total_income = budget.summarize()
     expenses_output = (
@@ -246,12 +252,14 @@ def generate_expenses_incomes_output(budget: Budget):
         Output("df-expenses", "children"),
         Output("df-incomes", "children"),
         Output("rows", "children"),
+        Output("df-state", "data"),
     ],
     [
         Input("transaction-submit", "n_clicks"),
         Input("add-row-button", "n_clicks"),
         Input({"type": "delete-row", "index": ALL}, "n_clicks"),
         Input("upload-csv-submit", "n_clicks"),
+        Input("df-state", "data"),
     ],
     [
         State("upload-csv", "contents"),
@@ -268,6 +276,7 @@ def update_dataframe(
     _2,
     _3,
     _4,
+    json_df,
     contents,
     dates,
     amounts,
@@ -275,13 +284,19 @@ def update_dataframe(
     categories,
     existing_rows,
 ):
+
     triggered_id = ctx.triggered_id
+
+    if json_df is not None:
+        budget = Budget.from_json(json_df, orient="records")
+    else:
+        budget = Budget()
+
+    # create df from JSON data in dcc.store
 
     if triggered_id == "transaction-submit":
         # submit transactions
-        success = budget.add_transactions(dates, amounts, items, categories)
-        if not success:
-            raise Exception("Adding transactions not successful.")
+        budget.add_transactions(dates, amounts, items, categories)
 
         expenses_output, incomes_output = generate_expenses_incomes_output(budget)
 
@@ -289,30 +304,42 @@ def update_dataframe(
             expenses_output,
             incomes_output,
             [generate_empty_row(restart=True)],
+            budget.df.to_json(orient="records"),
         )
 
     elif triggered_id == "add-row-button":
         # add an empty row
-        budget.row_id += 1
-        return no_update, no_update, existing_rows + [generate_empty_row()]
+        global row_id
+        row_id += 1
+        return (
+            no_update,
+            no_update,
+            existing_rows + [generate_empty_row()],
+            no_update,
+        )
 
     elif triggered_id == "upload-csv-submit" and contents is not None:
         # uploading data from csv
-        budget = Budget.import_csv(contents)
-        expenses_output, incomes_output = generate_expenses_incomes_output(budget)
+        csv_budget = Budget.from_csv(contents)
+        expenses_output, incomes_output = generate_expenses_incomes_output(csv_budget)
         return (
             expenses_output,
             incomes_output,
             [generate_empty_row(restart=True)],
+            csv_budget.df.to_json(orient="records"),
         )
 
+    elif triggered_id == "upload-csv-submit" and contents is None:
+        raise Exception("Please upload a valid CSV file first before submitting!")
+
     else:
+        print(triggered_id)
         # delete a row
         row_to_delete = triggered_id["index"]
         updated_rows = [
             row for row in existing_rows if row["props"]["id"]["index"] != row_to_delete
         ]
-        return no_update, no_update, updated_rows
+        return no_update, no_update, updated_rows, no_update
 
 
 # generates a pie chart based of the money amounts in the df, separated by categories
@@ -320,10 +347,16 @@ def update_dataframe(
     Output("pie-chart", "figure"),
     Input("transaction-submit", "n_clicks"),
     Input("month-picker", "value"),
+    Input("df-state", "data"),
 )
-def generate_pie(_, input_month):
+def generate_pie(_, input_month, json_df):
 
     if input_month is not None:
+        if json_df is not None:
+            budget = Budget.from_json(json_df, orient="records")
+        else:
+            budget = Budget()
+
         input_date = datetime.strptime(input_month, "%Y-%m-%d")
         filtered_df_by_month = budget.expenses_by_category(
             input_date.month, input_date.year
@@ -347,7 +380,7 @@ def generate_pie(_, input_month):
         )
 
     else:
-        fig = px.pie(filtered_df_by_month, values="Amount", names="Category", hole=0.3)
+        fig = px.pie(filtered_df_by_month, values="amount", names="category", hole=0.3)
 
     return fig
 
