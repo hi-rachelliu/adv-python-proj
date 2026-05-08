@@ -21,3 +21,7 @@
   height: 38px;
   align-self: flex-end;
 }
+
+.mantine-MonthPickerInput-input {
+  font-family: inherit;
+}

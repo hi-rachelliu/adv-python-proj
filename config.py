@@ -9,4 +9,4 @@ CATEGORIES = [
     "other",
 ]
 
-ATTRIBUTES = ["date", "amount", "item", "category"]
+COLUMNS = ["date", "amount", "item", "category"]

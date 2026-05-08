@@ -1,6 +1,6 @@
 from __future__ import annotations
 import pandas as pd
-from config import CATEGORIES
+from config import CATEGORIES, COLUMNS
 from datetime import datetime
 import base64
 import io
@@ -33,19 +33,30 @@ class Budget:
         processed = "".join(line.strip('"') for line in str_buffer)
 
         try:
-            df = pd.read_csv(io.StringIO(processed))
-            # make all columns lowercase
+            df = pd.read_csv(io.StringIO(processed), sep=",|;|:|\t|`", engine="python")
+
+            # normalize: make lowercase + strip whitespace from
+            # all columns names + category values
             df.columns = df.columns.str.lower()
+            df.columns = df.columns.str.strip()
 
-            # make all category values lowercase
             df["category"] = df["category"].str.lower()
+            df["category"] = df["category"].str.strip()
 
-            print("DATAFRAME: \n", df.to_string())
+            # only include required columns, ignore extra columns
+            df = df[COLUMNS]
+
+            # TODO: run validations (correct cols/inputs) on dataframe
+            # TODO: validate amounts
+            # TODO: validate categories
+            # TODO: date format must be valid
+            # TODO: missing cols
+            # TODO: uneven rows
+
+            print(df.to_string())
+
         except Exception as e:
             raise Exception(f"There was an error processing this file: {e}")
-        # TODO: run validations (correct cols/inputs) on dataframe
-        # TODO do tests with bad csvs and see that errors are raised (missing col, wrong data, catgegories)
-        # TODO: handle exceptions in the UI!
 
         budget = Budget(df)
         return budget
@@ -66,16 +77,13 @@ class Budget:
             self.normalize_df()
         except Exception:
             raise Exception(f"Error normalizing df: {self.df.to_string()}")
-        print(self.df.to_string())
-        print(self.df.dtypes)
+
         self.row_id = 0
 
     def normalize_df(self) -> None:
         """
         Normalizes a dataframe
         """
-        # strip col name whitespace + lowercase
-        # do the same for categories
         self.df["date"] = pd.to_datetime(self.df["date"], errors="coerce")
         self.df["amount"] = pd.to_numeric(self.df["amount"], errors="coerce")
 
