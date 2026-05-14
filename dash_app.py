@@ -8,8 +8,6 @@ import dash_mantine_components as dmc
 from dash.development.base_component import Component
 from config import CATEGORIES
 
-# external_stylesheets=[dbc.themes.SKETCHY]
-
 app = Dash(external_stylesheets=[dbc.themes.SKETCHY])
 row_id = 0
 
@@ -259,7 +257,7 @@ def generate_expenses_incomes_output(budget: Budget):
         # modify a copy of incomes data to be more readable
         incomes_df["date"] = incomes_df["date"].apply(lambda x: x.strftime("%Y-%m-%d"))
         incomes_df["amount"] = incomes_df["amount"].apply(lambda x: f"${x}")
-        incomes_df.columns = incomes_df.columns.str.capitalize()
+        incomes_df.columns = incombvges_df.columns.str.capitalize()
 
     total_expense, total_income = budget.summarize()
     expenses_output = (
