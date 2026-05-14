@@ -11,7 +11,7 @@ JsonFrameOrient = Literal["split", "records", "index", "columns", "values", "tab
 
 class Budget:
     @classmethod
-    def from_json(cls, json_df: str | None, orient: JsonFrameOrient | None):
+    def from_json(cls, json_df: str | None, orient: JsonFrameOrient | None) -> Budget:
         """
         Creates a budget instance from a JSON dataframe object json_df, encoded
         with `orient`
@@ -52,8 +52,6 @@ class Budget:
             # TODO: date format must be valid
             # TODO: missing cols
             # TODO: uneven rows
-
-            print(df.to_string())
 
         except Exception as e:
             raise Exception(f"There was an error processing this file: {e}")
@@ -239,20 +237,73 @@ class Budget:
             return None
         return filtered_df
 
-    def monthly_income_spending(self):
+    def monthly_spending(
+        self, from_date_str: str, to_date_str: str
+    ) -> pd.DataFrame | None:
         """
-        Returns a dataframe
+        Returns an expenses dataframe filtered by `from_date` and `to_date`, both
+        formatted like %Y-%m-%d. Includes all expenses from the start of the
+        `from_date` month to the end of the `to_date` month.
 
-        Feeds into the monthly incomes + spendings bar chart
+        Feeds into the spending, month to month chart
         """
-        # TODO
-        pass
+        from_date = datetime.strptime(from_date_str, "%Y-%m-%d")
+        to_date_end = datetime.strptime(to_date_str, "%Y-%m-%d")
 
-    def monthly_spending(self):
-        """
-        Returns a dataframe
+        if to_date_end.month == 12:
+            to_date_next_day = datetime(year=to_date_end.year + 1, month=1, day=1)
+        else:
+            to_date_next_day = datetime(
+                year=to_date_end.year, month=to_date_end.month + 1, day=1
+            )
 
-        Feeds into the monthly spendings bar chart
+        df_expenses = self.df[self.df["category"] != "income"]
+
+        filtered_df = df_expenses[
+            (df_expenses["date"] >= from_date)
+            & (df_expenses["date"] < to_date_next_day)
+        ]
+
+        monthly = (
+            filtered_df.groupby(filtered_df["date"].dt.to_period("M"))
+            .sum(numeric_only=True)
+            .reset_index()
+        )
+
+        if len(monthly) == 0:
+            return None
+        return monthly
+
+    def monthly_income_spending(self, from_date_str: str, to_date_str: str):
         """
-        # TODO
-        pass
+        Returns an expenses vs. incomes dataframe filtered by `from_date` and `to_date`, both
+        formatted like %Y-%m-%d. Includes all expenses and incomes from the
+        start of the `from_date` month to the end of the `to_date` month.
+
+        Feeds into the income vs. spending, month to month chart
+        """
+        from_date = datetime.strptime(from_date_str, "%Y-%m-%d")
+        to_date_end = datetime.strptime(to_date_str, "%Y-%m-%d")
+
+        if to_date_end.month == 12:
+            to_date_next_day = datetime(year=to_date_end.year + 1, month=1, day=1)
+        else:
+            to_date_next_day = datetime(
+                year=to_date_end.year, month=to_date_end.month + 1, day=1
+            )
+
+        filtered_df = self.df[
+            (self.df["date"] >= from_date) & (self.df["date"] < to_date_next_day)
+        ]
+
+        filtered_df["is_income"] = filtered_df["category"] == "income"
+
+        monthly_income_spending = (
+            filtered_df.groupby([filtered_df["date"].dt.to_period("M"), "is_income"])
+            .sum(numeric_only=True)
+            .reset_index()
+        )
+
+        if len(monthly_income_spending) == 0:
+            return None
+        return monthly_income_spending

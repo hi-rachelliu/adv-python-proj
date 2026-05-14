@@ -13,6 +13,21 @@ from config import CATEGORIES
 app = Dash(external_stylesheets=[dbc.themes.SKETCHY])
 row_id = 0
 
+empty_fig = go.Figure()
+empty_fig.update_layout(
+    xaxis={"visible": False},
+    yaxis={"visible": False},
+    annotations=[
+        {
+            "text": "Please add transactions for this month to see graphics",
+            "xref": "paper",
+            "yref": "paper",
+            "showarrow": False,
+            "font": {"size": 16},
+        }
+    ],
+)
+
 
 def generate_empty_row(restart: bool = False) -> html.Div:
     """
@@ -165,7 +180,7 @@ def pie_chart_elements() -> list[Component]:
             style={"marginTop": "20px"},
         ),
         dmc.MonthPickerInput(
-            label="Pick a month", placeholder="Select month", id="month-picker"
+            label="Pick a month:", placeholder="Select month", id="month-picker"
         ),
         html.Div(id="summary-pie"),
         dcc.Graph(id="pie-chart", style={"marginBottom": "20px"}),
@@ -181,10 +196,11 @@ def spending_chart_elements() -> list[Component]:
         dmc.MonthPickerInput(
             type="range",
             id="spending-range",
-            label="Pick months range",
+            label="Pick months range:",
             placeholder="Pick dates range",
         ),
-        html.P("Not implemented yet", style={"marginBottom": "20px"}),
+        html.Div(id="summary-spending"),
+        dcc.Graph(id="spending-chart", style={"marginBottom": "20px"}),
     ]
 
 
@@ -196,11 +212,12 @@ def spending_income_chart_elements() -> list[Component]:
     return [
         dmc.MonthPickerInput(
             type="range",
-            id="income-spending-range",
-            label="Pick months range",
+            id="spending-income-range",
+            label="Pick months range:",
             placeholder="Pick dates range",
         ),
-        html.P("Not implemented yet", style={"marginBottom": "20px"}),
+        html.Div(id="summary-spending-income"),
+        dcc.Graph(id="spending-income-chart", style={"marginBottom": "20px"}),
     ]
 
 
@@ -393,69 +410,110 @@ def update_dataframe(
 @app.callback(
     Output("pie-chart", "figure"),
     Output("summary-pie", "children"),
-    Input("transaction-submit", "n_clicks"),
     Input("month-picker", "value"),
     Input("df-state", "data"),
 )
-def generate_pie(_, input_month, json_df):
+def generate_pie(input_month, json_df):
 
-    if input_month is not None:
-        if json_df is not None:
-            budget = Budget.from_json(json_df, orient="records")
-        else:
-            budget = Budget()
+    if input_month is None or json_df is None:
+        # if inputs are empty, return an empty graph with a note to add transactions
+        fig = empty_fig
+        summary = html.Div()
 
+    else:
+        # if inputs are both valid, use inputs to return a summary and pie chart
+        budget = Budget.from_json(json_df, orient="records")
         input_date = datetime.strptime(input_month, "%Y-%m-%d")
         filtered_df_by_month = budget.expenses_by_category(
             input_date.month, input_date.year
         )
+        if filtered_df_by_month is not None:
+            fig = px.pie(
+                filtered_df_by_month, values="amount", names="category", hole=0.3
+            )
 
-    if input_month is None or filtered_df_by_month is None:
-        # return an empty graph with a note to add transactions
-        fig = go.Figure()
-        fig.update_layout(
-            xaxis={"visible": False},
-            yaxis={"visible": False},
-            annotations=[
-                {
-                    "text": "Please add transactions for this month to see graphics",
-                    "xref": "paper",
-                    "yref": "paper",
-                    "showarrow": False,
-                    "font": {"size": 16},
-                }
-            ],
-        )
-        summary = html.Div()
+            total_amount = filtered_df_by_month["amount"].sum()
+            grouped_categories = filtered_df_by_month.groupby(["category"])[
+                "amount"
+            ].sum()
+            grouped_df = grouped_categories.to_frame().reset_index()
+            grouped_df["amount"] = grouped_df["amount"].apply(lambda x: f"${x}")
+            grouped_df.columns = grouped_df.columns.str.capitalize()
 
-    else:
-        fig = px.pie(filtered_df_by_month, values="amount", names="category", hole=0.3)
-
-        total_amount = filtered_df_by_month["amount"].sum()
-        grouped_categories = filtered_df_by_month.groupby(["category"])["amount"].sum()
-        grouped_df = grouped_categories.to_frame().reset_index()
-        grouped_df["amount"] = grouped_df["amount"].apply(lambda x: f"${x}")
-        grouped_df.columns = grouped_df.columns.str.capitalize()
-
-        summary = html.Div(
-            children=[
-                html.P(html.Strong("Summary:"), style={"marginTop": "20px"}),
-                html.P(f"Total spending: ${total_amount}"),
-                dbc.Table.from_dataframe(grouped_df),
-            ]
-        )
+            summary = html.Div(
+                children=[
+                    html.P(html.Strong("Summary:"), style={"marginTop": "20px"}),
+                    html.P(f"Total spending: ${total_amount}"),
+                    dbc.Table.from_dataframe(grouped_df),
+                ]
+            )
+        else:
+            fig = empty_fig
+            summary = html.Div()
 
     return fig, summary
 
 
-# @app.callback()
-# def generate_spending_chart():
-#     pass
+@app.callback(
+    Output("spending-chart", "figure"),
+    Output("summary-spending", "children"),
+    Input("spending-range", "value"),
+    Input("df-state", "data"),
+)
+def generate_spending_chart(months_range, json_df):
+
+    # if the months range and the dataframe both have data
+    if months_range and json_df and None not in months_range:
+        budget = Budget.from_json(json_df, orient="records")
+
+        # months_range should be a list of 2 values
+        from_date_str, to_date_str = months_range
+
+        df_filtered = budget.monthly_spending(from_date_str, to_date_str)
+
+        if df_filtered is None:
+            fig = empty_fig
+        else:
+            df_filtered["date"] = df_filtered["date"].astype(str)
+            fig = px.bar(df_filtered, x="date", y="amount")
+            fig.update_xaxes(type="category")
+
+    else:
+        fig = empty_fig
+
+    return fig, html.Div()
 
 
-# @app.callback()
-# def generate_spending_income_chart():
-#     pass
+@app.callback(
+    Output("spending-income-chart", "figure"),
+    Output("summary-spending-income", "children"),
+    Input("spending-income-range", "value"),
+    Input("df-state", "data"),
+)
+def generate_spending_income_chart(months_range, json_df):
+
+    # if the months range and the dataframe both have data
+    if months_range and json_df and None not in months_range:
+        budget = Budget.from_json(json_df, orient="records")
+
+        # months_range should be a list of 2 values
+        from_date_str, to_date_str = months_range
+
+        df_filtered = budget.monthly_income_spending(from_date_str, to_date_str)
+
+        if df_filtered is None:
+            fig = empty_fig
+        else:
+            df_filtered["date"] = df_filtered["date"].astype(str)
+            fig = px.bar(
+                df_filtered, x="date", y="amount", color="is_income", barmode="group"
+            )
+            fig.update_xaxes(type="category")
+
+    else:
+        fig = empty_fig
+
+    return fig, html.Div()
 
 
 if __name__ == "__main__":
