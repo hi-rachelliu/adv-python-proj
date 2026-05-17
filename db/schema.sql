@@ -1,7 +1,7 @@
 create table transactions (
-  id INTEGER PRIMARY KEY,
-  date DATETIME,
-  amount DECIMAL(10, 2),
-  item VARCHAR(40)
-  category VARCHAR(40)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date VARCHAR(20) NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  item VARCHAR(40) NOT NULL,
+  category VARCHAR(40) NOT NULL
 );

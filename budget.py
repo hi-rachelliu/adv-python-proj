@@ -7,10 +7,13 @@ import io
 from typing import Literal
 import sqlite3
 import json
+from sqlalchemy import create_engine, text
 
 JsonFrameOrient = Literal["split", "records", "index", "columns", "values", "table"]
 
 DATABASE_PATH = "db/budget.db"
+
+engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=True)
 
 
 class SQLiteError(Exception):
@@ -27,58 +30,6 @@ def setup_db():
         yield connection
     finally:
         connection.close()
-
-
-def query_db(connection, query: str, args=(), one=False):
-    """
-    Call like:
-    connection=sqlite3.connect object, query = "INSERT INTO books
-    (title, author) VALUES (?, ?)", args=(book.title, book.author), one=True
-    Returns the result of a certain query with args on repos.db
-
-    If one=True, returns the first result only
-
-    Returns None if there are no results
-    """
-    try:
-        cursor = connection.cursor()
-        print(f"\nEXECUTING QUERY:\n{query}\nARGS: {args}\n")
-        db = cursor.execute(query, args)
-        rows = db.fetchall()
-        connection.commit()
-    except sqlite3.OperationalError as e:
-        print(f"SQL ERROR: {e}")
-        connection.rollback()
-        raise SQLiteError(
-            f"The table cannot be found: {e}",
-        )
-    except sqlite3.IntegrityError as e:
-        print(f"SQL ERROR: {e}")
-        connection.rollback()
-        raise SQLiteError(
-            f"A duplicate is already in the database: {e}",
-        )
-    except sqlite3.Error as e:
-        print(f"SQL ERROR: {e}")
-        connection.rollback()
-        raise SQLiteError(f"An error occurred: {e}")
-    if rows:
-        if one:
-            return rows[0]
-        return rows
-    return None
-
-
-def print_sqlite_object(rows):
-    """
-    Used for debugging
-    """
-    res = ""
-    for row in rows:
-        row_dict = {key: row[key] for key in row.keys()}
-        json_str = json.dumps(row_dict)
-        res += json_str
-    return res
 
 
 # ////////////////////////////////////////////////////////////////////////
@@ -190,14 +141,21 @@ class Budget:
                 }
             )
         else:
-            self.df = df
-        try:
-            self.normalize_df()
-            # TODO put data from df into sqlite query_db
-        except Exception:
-            raise Exception(f"Error normalizing df: {self.df.to_string()}")
-
-        self.row_id = 0
+            try:
+                self.df = df
+                self.normalize_df()
+            except Exception as e:
+                raise Exception(f"Error normalizing df: {e}")
+            try:
+                # put data from df into sqlite
+                self.df.to_sql(
+                    name="transactions",
+                    con=engine,
+                    if_exists="replace",
+                    index=False,
+                )
+            except Exception as e:
+                raise Exception(f"Error persisting df to sqlite3: {e}")
 
     def normalize_df(self) -> None:
         """
@@ -225,8 +183,6 @@ class Budget:
                     "Validation Error: check that your inputs are not empty. "
                     "Please fill out or delete any rows with empty inputs."
                 )
-
-        num_transactions = len(dates)
 
         # validate amounts
         try:
@@ -271,59 +227,45 @@ class Budget:
         )
         self.df = pd.concat([self.df, new_rows], ignore_index=True)
         self.normalize_df()
-        self.row_id += num_transactions
+        self.df.to_sql(
+            name="transactions",
+            con=engine,
+            if_exists="replace",
+            index=False,
+        )
         return True
 
-    def get_all_expenses(
-        self, from_date_str: str = "", to_date_str: str = ""
-    ) -> pd.DataFrame | None:
+    def get_all_expenses(self) -> pd.DataFrame | None:
         """
-        Gets all expenses from the database, can filter by start and end dates.
-        `from_date` and `to_date` are strs that represent the start and end dates
-        (inclusive) of the expenses to include.
-        If both are empty strings, then the function returns all expenses.
+        Gets all expenses from the database.
         Returns None if the database is empty.
+
+        Used in generate_expenses_incomes_output().
         """
-        if not from_date_str and not to_date_str:
-            df_expenses = self.df[self.df["category"] != "income"]
 
-        elif not from_date_str or not to_date_str:
-            raise Exception(
-                "Validation Error: from_date and to_date must both be filled with values!"
-            )
+        sql_query = """SELECT * from transactions
+                    where category != 'income' """
+        with engine.connect() as conn, conn.begin():
+            df_expenses = pd.read_sql_query(text(sql_query), engine)
 
-        else:
-            from_date = datetime.strptime(from_date_str, "%Y-%m-%d")
-            to_date = datetime.strptime(to_date_str, "%Y-%m-%d")
-            filtered_df = self.df[
-                (self.df["date"] >= from_date) & (self.df["date"] <= to_date)
-            ]
-            df_expenses = filtered_df[filtered_df["category"] != "income"]
+        df_expenses["date"] = pd.to_datetime(df_expenses["date"]).dt.strftime(
+            "%Y-%m-%d"
+        )
 
         return df_expenses.copy(deep=True) if len(df_expenses) else None
 
-    def get_all_incomes(
-        self, from_date_str: str = "", to_date_str: str = ""
-    ) -> pd.DataFrame | None:
+    def get_all_incomes(self) -> pd.DataFrame | None:
         """
         gets all incomes from the database, can filter by start and end dates.
         Returns None if the database is empty.
         """
-        if not from_date_str and not to_date_str:
-            df_incomes = self.df[self.df["category"] == "income"]
 
-        elif not from_date_str or not to_date_str:
-            raise Exception(
-                "Validation Error: from_date and to_date must both be filled with values!"
-            )
+        sql_query = """SELECT * from transactions
+                    where category == 'income' """
+        with engine.connect() as conn, conn.begin():
+            df_incomes = pd.read_sql_query(text(sql_query), engine)
 
-        else:
-            from_date = datetime.strptime(from_date_str, "%Y-%m-%d")
-            to_date = datetime.strptime(to_date_str, "%Y-%m-%d")
-            filtered_df = self.df[
-                (self.df["date"] >= from_date) & (self.df["date"] <= to_date)
-            ]
-            df_incomes = filtered_df[filtered_df["category"] == "income"]
+        df_incomes["date"] = pd.to_datetime(df_incomes["date"]).dt.strftime("%Y-%m-%d")
 
         return df_incomes.copy(deep=True) if len(df_incomes) else None
 
@@ -331,11 +273,17 @@ class Budget:
         """
         Returns the total expense and the total income
         """
-        df_expenses = self.df[self.df["category"] != "income"]
-        total_expense = df_expenses["amount"].sum()
+        expense_query = """SELECT sum(amount) from transactions
+                        where category <> 'income' """
+        with engine.connect() as conn, conn.begin():
+            expense_scalar = pd.read_sql_query(text(expense_query), engine).iloc[0, 0]
+            total_expense = float(expense_scalar or 0.0)
 
-        df_incomes = self.df[self.df["category"] == "income"]
-        total_income = df_incomes["amount"].sum()
+        income_query = """SELECT sum(amount) from transactions
+                        where category = 'income' """
+        with engine.connect() as conn, conn.begin():
+            income_scalar = pd.read_sql_query(text(income_query), engine).iloc[0, 0]
+            total_income = float(income_scalar or 0.0)
 
         return total_expense, total_income
 
@@ -349,11 +297,21 @@ class Budget:
 
         Feeds into the expenses by category pie chart.
         """
-        df_expenses = self.df[self.df["category"] != "income"]
-        filtered_df = df_expenses[
-            (df_expenses["date"].dt.month == input_month)
-            & (df_expenses["date"].dt.year == input_year)
-        ]
+        sql_query = """SELECT * from transactions
+                        where category <> 'income' 
+                        AND strftime('%m', date) = :month
+                        AND strftime('%Y', date) = :year
+                        """
+        with engine.connect() as conn, conn.begin():
+            filtered_df = pd.read_sql_query(
+                text(sql_query),
+                params={
+                    "month": f"{input_month:02d}",
+                    "year": str(input_year),
+                },
+                con=engine,
+            )
+
         if len(filtered_df) == 0:
             return None
         return filtered_df
@@ -368,9 +326,7 @@ class Budget:
 
         Feeds into the spending, month to month chart
         """
-        from_date = datetime.strptime(from_date_str, "%Y-%m-%d")
         to_date_end = datetime.strptime(to_date_str, "%Y-%m-%d")
-
         if to_date_end.month == 12:
             to_date_next_day = datetime(year=to_date_end.year + 1, month=1, day=1)
         else:
@@ -378,18 +334,21 @@ class Budget:
                 year=to_date_end.year, month=to_date_end.month + 1, day=1
             )
 
-        df_expenses = self.df[self.df["category"] != "income"]
+        to_date = datetime.strftime(to_date_next_day, "%Y-%m-%d")
 
-        filtered_df = df_expenses[
-            (df_expenses["date"] >= from_date)
-            & (df_expenses["date"] < to_date_next_day)
-        ]
-
-        monthly = (
-            filtered_df.groupby(filtered_df["date"].dt.to_period("M"))
-            .sum(numeric_only=True)
-            .reset_index()
-        )
+        sql_query = """SELECT strftime('%Y-%m', date) AS date, sum(amount) AS amount 
+                    FROM transactions
+                    where category <> 'income'
+                    AND date >= :from_date
+                    AND date < :to_date
+                    GROUP BY strftime('%Y-%m', date)
+                    """
+        with engine.connect() as conn, conn.begin():
+            monthly = pd.read_sql_query(
+                text(sql_query),
+                params={"from_date": from_date_str, "to_date": to_date},
+                con=engine,
+            )
 
         if len(monthly) == 0:
             return None
@@ -403,9 +362,7 @@ class Budget:
 
         Feeds into the income vs. spending, month to month chart
         """
-        from_date = datetime.strptime(from_date_str, "%Y-%m-%d")
         to_date_end = datetime.strptime(to_date_str, "%Y-%m-%d")
-
         if to_date_end.month == 12:
             to_date_next_day = datetime(year=to_date_end.year + 1, month=1, day=1)
         else:
@@ -413,17 +370,22 @@ class Budget:
                 year=to_date_end.year, month=to_date_end.month + 1, day=1
             )
 
-        filtered_df = self.df[
-            (self.df["date"] >= from_date) & (self.df["date"] < to_date_next_day)
-        ]
+        to_date = datetime.strftime(to_date_next_day, "%Y-%m-%d")
 
-        filtered_df["is_income"] = filtered_df["category"] == "income"
-
-        monthly_income_spending = (
-            filtered_df.groupby([filtered_df["date"].dt.to_period("M"), "is_income"])
-            .sum(numeric_only=True)
-            .reset_index()
-        )
+        sql_query = """SELECT strftime('%Y-%m', date) AS date, 
+                    sum(amount) AS amount,
+                    category = 'income' AS category
+                    FROM transactions
+                    WHERE date >= :from_date
+                    AND date < :to_date
+                    GROUP BY strftime('%Y-%m', date), category = 'income'
+                    """
+        with engine.connect() as conn, conn.begin():
+            monthly_income_spending = pd.read_sql_query(
+                text(sql_query),
+                params={"from_date": from_date_str, "to_date": to_date},
+                con=engine,
+            )
 
         if len(monthly_income_spending) == 0:
             return None

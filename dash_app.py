@@ -246,18 +246,14 @@ def generate_expenses_incomes_output(budget: Budget):
 
     if expenses_df is not None:
         # modify a copy of expenses data to be more readable
-        expenses_df["date"] = expenses_df["date"].apply(
-            lambda x: x.strftime("%Y-%m-%d")
-        )
         expenses_df["amount"] = expenses_df["amount"].apply(lambda x: f"${x}")
         expenses_df.columns = expenses_df.columns.str.capitalize()
 
     incomes_df = budget.get_all_incomes()
     if incomes_df is not None:
         # modify a copy of incomes data to be more readable
-        incomes_df["date"] = incomes_df["date"].apply(lambda x: x.strftime("%Y-%m-%d"))
         incomes_df["amount"] = incomes_df["amount"].apply(lambda x: f"${x}")
-        incomes_df.columns = incombvges_df.columns.str.capitalize()
+        incomes_df.columns = incomes_df.columns.str.capitalize()
 
     total_expense, total_income = budget.summarize()
     expenses_output = (
@@ -503,9 +499,11 @@ def generate_spending_income_chart(months_range, json_df):
             fig = empty_fig
         else:
             df_filtered["date"] = df_filtered["date"].astype(str)
-            fig = px.bar(
-                df_filtered, x="date", y="amount", color="is_income", barmode="group"
+            df_filtered["category"] = df_filtered["category"].map(
+                {0: "Expense", 1: "Income"}
             )
+            fig = px.bar(df_filtered, x="date", y="amount", color="category")
+            fig.update_layout(barmode="group")
             fig.update_xaxes(type="category")
 
     else:

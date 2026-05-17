@@ -10,4 +10,5 @@ dependencies = [
     "dash-mantine-components>=2.7.0",
     "pandas>=3.0.2",
     "plotly>=6.7.0",
+    "sqlalchemy>=2.0.49",
 ]
