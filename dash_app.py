@@ -222,7 +222,6 @@ def spending_income_chart_elements() -> list[Component]:
 app.layout = dmc.MantineProvider(
     html.Div(
         children=[
-            dcc.Store(id="df-state"),
             html.H1("my budget app/data"),
             *transaction_elements(),
             *from_csv_elements(),
@@ -284,7 +283,6 @@ def generate_expenses_incomes_output(budget: Budget):
         Output("df-expenses", "children"),
         Output("df-incomes", "children"),
         Output("rows", "children"),
-        Output("df-state", "data"),
         Output("upload-csv-message", "children"),
         Output("upload-status", "children"),
     ],
@@ -294,7 +292,6 @@ def generate_expenses_incomes_output(budget: Budget):
         Input({"type": "delete-row", "index": ALL}, "n_clicks"),
         Input("upload-csv-submit", "n_clicks"),
         Input("upload-csv", "filename"),
-        Input("df-state", "data"),
     ],
     [
         State("upload-csv", "contents"),
@@ -312,7 +309,6 @@ def update_dataframe(
     _3,
     _4,
     uploaded_csv_filename,
-    json_df,
     contents,
     dates,
     amounts,
@@ -323,16 +319,12 @@ def update_dataframe(
 
     triggered_id = ctx.triggered_id
 
-    # create df from JSON data in dcc.store
-    if json_df is not None:
-        budget = Budget.from_json(json_df, orient="records")
-    else:
-        budget = Budget()
+    # create df from budget class
+    budget = Budget()
 
     # shows the selected filename on the file uploader
     if triggered_id == "upload-csv":
         return (
-            no_update,
             no_update,
             no_update,
             no_update,
@@ -349,7 +341,6 @@ def update_dataframe(
             expenses_output,
             incomes_output,
             [generate_empty_row(restart=True)],
-            budget.df.to_json(orient="records"),
             "",
             no_update,
         )
@@ -362,7 +353,6 @@ def update_dataframe(
             no_update,
             no_update,
             existing_rows + [generate_empty_row()],
-            no_update,
             "",
             no_update,
         )
@@ -375,14 +365,12 @@ def update_dataframe(
             expenses_output,
             incomes_output,
             [generate_empty_row(restart=True)],
-            csv_budget.df.to_json(orient="records"),
             "Successfully uploaded from CSV file! See your transactions above.",
             "",
         )
 
     elif triggered_id == "upload-csv-submit" and contents is None:
         return (
-            no_update,
             no_update,
             no_update,
             no_update,
@@ -397,7 +385,7 @@ def update_dataframe(
         updated_rows = [
             row for row in existing_rows if row["props"]["id"]["index"] != row_to_delete
         ]
-        return (no_update, no_update, updated_rows, no_update, "", no_update)
+        return (no_update, no_update, updated_rows, "", no_update)
 
 
 # generates a pie chart based of the money amounts in the df, separated by categories
@@ -405,18 +393,17 @@ def update_dataframe(
     Output("pie-chart", "figure"),
     Output("summary-pie", "children"),
     Input("month-picker", "value"),
-    Input("df-state", "data"),
 )
-def generate_pie(input_month, json_df):
+def generate_pie(input_month):
 
-    if input_month is None or json_df is None:
+    if input_month is None:
         # if inputs are empty, return an empty graph with a note to add transactions
         fig = empty_fig
         summary = html.Div()
 
     else:
         # if inputs are both valid, use inputs to return a summary and pie chart
-        budget = Budget.from_json(json_df, orient="records")
+        budget = Budget()
         input_date = datetime.strptime(input_month, "%Y-%m-%d")
         filtered_df_by_month = budget.expenses_by_category(
             input_date.month, input_date.year
@@ -452,14 +439,12 @@ def generate_pie(input_month, json_df):
     Output("spending-chart", "figure"),
     Output("summary-spending", "children"),
     Input("spending-range", "value"),
-    Input("df-state", "data"),
 )
-def generate_spending_chart(months_range, json_df):
+def generate_spending_chart(months_range):
 
+    budget = Budget()
     # if the months range and the dataframe both have data
-    if months_range and json_df and None not in months_range:
-        budget = Budget.from_json(json_df, orient="records")
-
+    if months_range and budget.df is not None and None not in months_range:
         # months_range should be a list of 2 values
         from_date_str, to_date_str = months_range
 
@@ -482,14 +467,13 @@ def generate_spending_chart(months_range, json_df):
     Output("spending-income-chart", "figure"),
     Output("summary-spending-income", "children"),
     Input("spending-income-range", "value"),
-    Input("df-state", "data"),
 )
-def generate_spending_income_chart(months_range, json_df):
+def generate_spending_income_chart(months_range):
 
     # if the months range and the dataframe both have data
-    if months_range and json_df and None not in months_range:
-        budget = Budget.from_json(json_df, orient="records")
+    budget = Budget()
 
+    if months_range and budget.df is not None and None not in months_range:
         # months_range should be a list of 2 values
         from_date_str, to_date_str = months_range
 

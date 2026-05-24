@@ -1,4 +1,4 @@
-create table transactions (
+CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date VARCHAR(20) NOT NULL,
   amount DECIMAL(10, 2) NOT NULL,

@@ -5,31 +5,30 @@ from datetime import datetime
 import base64
 import io
 from typing import Literal
-import sqlite3
-import json
+from pathlib import Path
 from sqlalchemy import create_engine, text
 
 JsonFrameOrient = Literal["split", "records", "index", "columns", "values", "table"]
 
 DATABASE_PATH = "db/budget.db"
+SCHEMA_PATH = "db/schema.sql"
 
-engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=True)
+
+def setup_db():
+    schema_sql = Path(SCHEMA_PATH).read_text()
+
+    with engine.begin() as conn:
+        connection = conn.connection
+        connection.executescript(schema_sql)
+
+
+Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
+engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False, future=True)
+setup_db()
 
 
 class SQLiteError(Exception):
     pass
-
-
-def setup_db():
-    """
-    A generator that yields a sqlite3.Connection to the database
-    """
-    connection = sqlite3.connect(DATABASE_PATH)
-    connection.row_factory = sqlite3.Row
-    try:
-        yield connection
-    finally:
-        connection.close()
 
 
 # ////////////////////////////////////////////////////////////////////////
@@ -43,41 +42,25 @@ class Budget:
         with `orient`
         """
         parsed_df = pd.read_json(io.StringIO(json_df), orient=orient)
-        budget = Budget(df=parsed_df)
+        budget = cls(df=parsed_df)
         return budget
 
-    @classmethod
-    def from_csv(cls, contents) -> Budget:
-        """
-        Bulk imports from csv instead of manually inputting transactions.
-        Returns serialized df state.
-        """
-        _, content_string = contents.split(",")
-
-        decoded = base64.b64decode(content_string)
-        str_buffer = decoded.decode("utf-8")
-        processed = "".join(line.strip('"') for line in str_buffer)
-
-        try:
-            # read csv
-            df = pd.read_csv(io.StringIO(processed), sep=",|;|:|\t|`", engine="python")
-
-            # normalize: make lowercase + strip whitespace from
-            # all columns names + category values
-            df.columns = df.columns.str.lower()
-            df.columns = df.columns.str.strip()
-
-        except Exception as e:
-            raise Exception(f"There was an error processing this file: {e}")
+    @staticmethod
+    def _validate_rows(df: pd.DataFrame) -> pd.DataFrame:
 
         # validate all required columns are included
-        required_cols_included = all(c in df.columns for c in COLUMNS)
-        if not required_cols_included:
+        required_cols_missing = [c for c in COLUMNS if c not in df.columns]
+        if required_cols_missing:
             raise Exception(
-                f"Validation Error: check that all required columns: {COLUMNS} are included."
+                f"Validation Error: Missing columns: {required_cols_missing}. Check that all required columns: {COLUMNS} are included."
             )
 
-        # validate there are no empty values in any of the required columns
+        # validate there are no empty strings in any of the required columns
+        has_empty_strings = (df == "").any().any()
+        if has_empty_strings:
+            raise Exception("Validation Error: check that your values are not empty.")
+
+        # validate there are no NaN values in any of the required columns
         nan_cols = df.columns[df.isna().any()].to_list()
         invalid_cols = [c for c in nan_cols if c in COLUMNS]
         print(invalid_cols)
@@ -112,34 +95,56 @@ class Budget:
             )
 
         # validate categories
-        valid_categories = all(category in CATEGORIES for category in df["category"])
-        if not valid_categories:
+        invalid_categories = [c for c in df["category"] if c not in CATEGORIES]
+        if invalid_categories:
             raise Exception(
-                f"Validation Error: category values are not valid: are not one of {CATEGORIES}"
+                f"Validation Error: category values {invalid_categories} are not valid: are not one of {CATEGORIES}"
             )
 
         # validate dates
         try:
-            format = "%Y-%m-%d"
-            datetime_dates = [datetime.strptime(date, format) for date in df["date"]]
+            # format = "%Y-%m-%d"
+            datetime_dates = pd.to_datetime(df["date"])
+            # datetime_dates = [datetime.strptime(date, format) for date in df["date"]]
         except Exception:
             raise Exception(
                 "Validation Error: transaction dates are not valid: cannot be converted into datetime values"
             )
+        return df
 
+    @classmethod
+    def from_csv(cls, contents) -> Budget:
+        """
+        Bulk imports from csv instead of manually inputting transactions.
+        Returns serialized df state.
+        """
+        _, content_string = contents.split(",")
+
+        decoded = base64.b64decode(content_string)
+        str_buffer = decoded.decode("utf-8")
+        processed = "".join(line.strip('"') for line in str_buffer)
+
+        try:
+            # read csv
+            read_df = pd.read_csv(
+                io.StringIO(processed), sep=",|;|:|\t|`", engine="python"
+            )
+
+            # normalize: make lowercase + strip whitespace from
+            # all columns names + category values
+            read_df.columns = read_df.columns.str.lower()
+            read_df.columns = read_df.columns.str.strip()
+        except Exception as e:
+            raise Exception(f"There was an error processing this file: {e}")
+
+        df = Budget._validate_rows(read_df)
         budget = Budget(df)
+
         return budget
 
     def __init__(self, df: pd.DataFrame | None = None) -> None:
         if df is None:
-            self.df = pd.DataFrame(
-                {
-                    "date": pd.Series(dtype="datetime64[ns]"),
-                    "amount": pd.Series(dtype="float"),
-                    "item": pd.Series(dtype="str"),
-                    "category": pd.Series(dtype="str"),
-                }
-            )
+            self.df = pd.read_sql("SELECT * FROM transactions", engine)
         else:
             try:
                 self.df = df
@@ -147,13 +152,14 @@ class Budget:
             except Exception as e:
                 raise Exception(f"Error normalizing df: {e}")
             try:
-                # put data from df into sqlite
-                self.df.to_sql(
-                    name="transactions",
-                    con=engine,
-                    if_exists="replace",
-                    index=False,
-                )
+                with engine.begin() as conn:
+                    # put data from df into sqlite
+                    self.df.to_sql(
+                        name="transactions",
+                        con=conn,
+                        if_exists="replace",
+                        index=False,
+                    )
             except Exception as e:
                 raise Exception(f"Error persisting df to sqlite3: {e}")
 
@@ -178,61 +184,36 @@ class Budget:
         # TODO: make fixture dataframes for testing
 
         for inputs in (dates, amounts, items, categories):
-            if None in inputs:
+            if None in inputs or "" in inputs:
                 raise Exception(
                     "Validation Error: check that your inputs are not empty. "
                     "Please fill out or delete any rows with empty inputs."
                 )
 
-        # validate amounts
+        # make a df from the columns and validate it
         try:
-            float_amounts = [float(amount) for amount in amounts]
-        except Exception:
-            raise Exception(
-                "Validation Error: transaction amounts are not valid. "
-                "Check that your have numeric values for all your "
-                "'Amount' inputs."
+            unvalidated_rows = pd.DataFrame(
+                {
+                    "date": dates,
+                    "amount": amounts,
+                    "item": items,
+                    "category": categories,
+                }
             )
+            new_rows = Budget._validate_rows(unvalidated_rows)
+        except Exception as e:
+            raise Exception(f"{e}")
 
-        amounts_positive = all(fl_amount > 0 for fl_amount in float_amounts)
-        if not amounts_positive:
-            raise Exception(
-                "Validation Error: transaction amounts are not valid. Check that your"
-                " 'Amount' inputs are all positive."
-            )
-
-        # validate categories
-        valid_categories = all(category in CATEGORIES for category in categories)
-        if not valid_categories:
-            raise Exception(
-                f"Validation Error: category values are not valid: are not one of {CATEGORIES}"
-            )
-
-        # date format must be valid
-        try:
-            format = "%Y-%m-%d"
-            datetime_dates = [datetime.strptime(date, format) for date in dates]
-        except Exception:
-            raise Exception(
-                "Validation Error: transaction dates are not valid: cannot be converted into datetime values"
-            )
-
-        new_rows = pd.DataFrame(
-            {
-                "date": datetime_dates,
-                "amount": float_amounts,
-                "item": items,
-                "category": categories,
-            }
-        )
         self.df = pd.concat([self.df, new_rows], ignore_index=True)
         self.normalize_df()
-        self.df.to_sql(
-            name="transactions",
-            con=engine,
-            if_exists="replace",
-            index=False,
-        )
+
+        with engine.begin() as conn:
+            self.df.to_sql(
+                name="transactions",
+                con=conn,
+                if_exists="replace",
+                index=False,
+            )
         return True
 
     def get_all_expenses(self) -> pd.DataFrame | None:
@@ -245,8 +226,8 @@ class Budget:
 
         sql_query = """SELECT * from transactions
                     where category != 'income' """
-        with engine.connect() as conn, conn.begin():
-            df_expenses = pd.read_sql_query(text(sql_query), engine)
+        with engine.begin() as conn:
+            df_expenses = pd.read_sql_query(text(sql_query), conn)
 
         df_expenses["date"] = pd.to_datetime(df_expenses["date"]).dt.strftime(
             "%Y-%m-%d"
@@ -262,8 +243,8 @@ class Budget:
 
         sql_query = """SELECT * from transactions
                     where category == 'income' """
-        with engine.connect() as conn, conn.begin():
-            df_incomes = pd.read_sql_query(text(sql_query), engine)
+        with engine.begin() as conn:
+            df_incomes = pd.read_sql_query(text(sql_query), conn)
 
         df_incomes["date"] = pd.to_datetime(df_incomes["date"]).dt.strftime("%Y-%m-%d")
 
@@ -275,14 +256,14 @@ class Budget:
         """
         expense_query = """SELECT sum(amount) from transactions
                         where category <> 'income' """
-        with engine.connect() as conn, conn.begin():
-            expense_scalar = pd.read_sql_query(text(expense_query), engine).iloc[0, 0]
+        with engine.begin() as conn:
+            expense_scalar = pd.read_sql_query(text(expense_query), conn).iloc[0, 0]
             total_expense = float(expense_scalar or 0.0)
 
         income_query = """SELECT sum(amount) from transactions
                         where category = 'income' """
-        with engine.connect() as conn, conn.begin():
-            income_scalar = pd.read_sql_query(text(income_query), engine).iloc[0, 0]
+        with engine.begin() as conn:
+            income_scalar = pd.read_sql_query(text(income_query), conn).iloc[0, 0]
             total_income = float(income_scalar or 0.0)
 
         return total_expense, total_income
@@ -302,14 +283,14 @@ class Budget:
                         AND strftime('%m', date) = :month
                         AND strftime('%Y', date) = :year
                         """
-        with engine.connect() as conn, conn.begin():
+        with engine.begin() as conn:
             filtered_df = pd.read_sql_query(
                 text(sql_query),
                 params={
                     "month": f"{input_month:02d}",
                     "year": str(input_year),
                 },
-                con=engine,
+                con=conn,
             )
 
         if len(filtered_df) == 0:
@@ -343,11 +324,11 @@ class Budget:
                     AND date < :to_date
                     GROUP BY strftime('%Y-%m', date)
                     """
-        with engine.connect() as conn, conn.begin():
+        with engine.begin() as conn:
             monthly = pd.read_sql_query(
                 text(sql_query),
                 params={"from_date": from_date_str, "to_date": to_date},
-                con=engine,
+                con=conn,
             )
 
         if len(monthly) == 0:
@@ -380,11 +361,11 @@ class Budget:
                     AND date < :to_date
                     GROUP BY strftime('%Y-%m', date), category = 'income'
                     """
-        with engine.connect() as conn, conn.begin():
+        with engine.begin() as conn:
             monthly_income_spending = pd.read_sql_query(
                 text(sql_query),
                 params={"from_date": from_date_str, "to_date": to_date},
-                con=engine,
+                con=conn,
             )
 
         if len(monthly_income_spending) == 0:
