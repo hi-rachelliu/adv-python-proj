@@ -4,9 +4,10 @@ from config import CATEGORIES, COLUMNS
 from datetime import datetime
 import base64
 import io
-from typing import Literal
+from typing import Literal, Any
 from pathlib import Path
 from sqlalchemy import create_engine, text
+import asyncio
 
 JsonFrameOrient = Literal["split", "records", "index", "columns", "values", "table"]
 
@@ -15,12 +16,65 @@ SCHEMA_PATH = "db/schema.sql"
 
 
 def setup_db():
+    """
+    Creates database file at startup if it doesn't exist already
+    """
     schema_sql = Path(SCHEMA_PATH).read_text()
 
     with engine.begin() as conn:
         connection = conn.connection
         connection.executescript(schema_sql)
 
+
+def sync_df_to_sql(df: pd.DataFrame) -> None:
+    """
+    Sync code: Tries persisting a dataframe to the sqlite database,
+    replacing any current data. Raises Exception if it fails
+    """
+    try:
+        with engine.begin() as conn:
+            df.to_sql(
+                name="transactions",
+                con=conn,
+                if_exists="replace",
+                index=False,
+            )
+    except Exception as e:
+        raise Exception(f"Error persisting df to sqlite3: {e}")
+
+
+async def async_df_to_sql(df: pd.DataFrame) -> None:
+    """
+    Async code: persists dataframe to sqlite
+    """
+    return await asyncio.to_thread(sync_df_to_sql, df)
+
+
+def sync_read_sql_query(
+    sql_query: str, params: dict[str, Any] | None = None
+) -> pd.DataFrame:
+    """
+    Sync code: Tries to read from sqlite database into a dataframe.
+    Raises Exception if it fails
+    """
+    try:
+        with engine.begin() as conn:
+            df = pd.read_sql_query(text(sql_query), params=params, con=conn)
+    except Exception as e:
+        raise Exception(f"Error creating dataframe from sql query: {e}")
+    return df
+
+
+async def async_read_sql_query(
+    sql_query: str, params: dict[str, Any] | None = None
+) -> pd.DataFrame:
+    """
+    Async code: reads from sqlite, returns df with sqlite data
+    """
+    return await asyncio.to_thread(sync_read_sql_query, sql_query, params)
+
+
+# ////////////////////////////////////////////////////////////////////////
 
 Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
 engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False, future=True)
@@ -31,22 +85,18 @@ class SQLiteError(Exception):
     pass
 
 
-# ////////////////////////////////////////////////////////////////////////
-
-
 class Budget:
-    @classmethod
-    def from_json(cls, json_df: str | None, orient: JsonFrameOrient | None) -> Budget:
-        """
-        Creates a budget instance from a JSON dataframe object json_df, encoded
-        with `orient`
-        """
-        parsed_df = pd.read_json(io.StringIO(json_df), orient=orient)
-        budget = cls(df=parsed_df)
-        return budget
-
     @staticmethod
     def _validate_rows(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Validates that for an input `df`:
+        - all required columns are included
+        - there are no empty strings in any of the required columns
+        - there are no NaN values in any of the required columns
+        - amounts are (or can be coerced into) floats
+        - categories are only: "Groceries", "Food", "Housing", "Utilities", "Gifts", "Travel", "Income", or "Other"
+        - dates are valid (can be coerced into datetime objects)
+        """
 
         # validate all required columns are included
         required_cols_missing = [c for c in COLUMNS if c not in df.columns]
@@ -54,6 +104,9 @@ class Budget:
             raise Exception(
                 f"Validation Error: Missing columns: {required_cols_missing}. Check that all required columns: {COLUMNS} are included."
             )
+
+        # only include required columns, ignore extra columns
+        df = df[COLUMNS]
 
         # validate there are no empty strings in any of the required columns
         has_empty_strings = (df == "").any().any()
@@ -63,7 +116,6 @@ class Budget:
         # validate there are no NaN values in any of the required columns
         nan_cols = df.columns[df.isna().any()].to_list()
         invalid_cols = [c for c in nan_cols if c in COLUMNS]
-        print(invalid_cols)
         if len(invalid_cols) > 0:
             raise Exception(
                 f"Validation Error: check that your values are not empty in columns: {invalid_cols}"
@@ -72,8 +124,6 @@ class Budget:
         try:
             df["category"] = df["category"].str.lower()
             df["category"] = df["category"].str.strip()
-            # only include required columns, ignore extra columns
-            df = df[COLUMNS]
         except Exception as e:
             raise Exception(f"There was an error processing this file: {e}")
 
@@ -103,14 +153,12 @@ class Budget:
 
         # validate dates
         try:
-            # format = "%Y-%m-%d"
             datetime_dates = pd.to_datetime(df["date"])
-            # datetime_dates = [datetime.strptime(date, format) for date in df["date"]]
         except Exception:
             raise Exception(
                 "Validation Error: transaction dates are not valid: cannot be converted into datetime values"
             )
-        return df
+        return df.reset_index(drop=True)
 
     @classmethod
     def from_csv(cls, contents) -> Budget:
@@ -144,31 +192,14 @@ class Budget:
 
     def __init__(self, df: pd.DataFrame | None = None) -> None:
         if df is None:
-            self.df = pd.read_sql("SELECT * FROM transactions", engine)
+            read_df = pd.read_sql("SELECT * FROM transactions", engine)
+            self.df = Budget._validate_rows(read_df)
         else:
             try:
                 self.df = df
-                self.normalize_df()
             except Exception as e:
                 raise Exception(f"Error normalizing df: {e}")
-            try:
-                with engine.begin() as conn:
-                    # put data from df into sqlite
-                    self.df.to_sql(
-                        name="transactions",
-                        con=conn,
-                        if_exists="replace",
-                        index=False,
-                    )
-            except Exception as e:
-                raise Exception(f"Error persisting df to sqlite3: {e}")
-
-    def normalize_df(self) -> None:
-        """
-        Normalizes a dataframe
-        """
-        self.df["date"] = pd.to_datetime(self.df["date"], errors="coerce")
-        self.df["amount"] = pd.to_numeric(self.df["amount"], errors="coerce")
+            asyncio.run(async_df_to_sql(self.df))
 
     def add_transactions(
         self,
@@ -181,7 +212,6 @@ class Budget:
         Validates and adds multiple transactions into the database, returns a
         bool, whether or not the concatenation succeeded.
         """
-        # TODO: make fixture dataframes for testing
 
         for inputs in (dates, amounts, items, categories):
             if None in inputs or "" in inputs:
@@ -204,16 +234,9 @@ class Budget:
         except Exception as e:
             raise Exception(f"{e}")
 
+        # persist the new df into sqlite
         self.df = pd.concat([self.df, new_rows], ignore_index=True)
-        self.normalize_df()
-
-        with engine.begin() as conn:
-            self.df.to_sql(
-                name="transactions",
-                con=conn,
-                if_exists="replace",
-                index=False,
-            )
+        asyncio.run(async_df_to_sql(self.df))
         return True
 
     def get_all_expenses(self) -> pd.DataFrame | None:
@@ -226,8 +249,7 @@ class Budget:
 
         sql_query = """SELECT * from transactions
                     where category != 'income' """
-        with engine.begin() as conn:
-            df_expenses = pd.read_sql_query(text(sql_query), conn)
+        df_expenses = asyncio.run(async_read_sql_query(sql_query))
 
         df_expenses["date"] = pd.to_datetime(df_expenses["date"]).dt.strftime(
             "%Y-%m-%d"
@@ -243,8 +265,7 @@ class Budget:
 
         sql_query = """SELECT * from transactions
                     where category == 'income' """
-        with engine.begin() as conn:
-            df_incomes = pd.read_sql_query(text(sql_query), conn)
+        df_incomes = asyncio.run(async_read_sql_query(sql_query))
 
         df_incomes["date"] = pd.to_datetime(df_incomes["date"]).dt.strftime("%Y-%m-%d")
 
@@ -256,15 +277,15 @@ class Budget:
         """
         expense_query = """SELECT sum(amount) from transactions
                         where category <> 'income' """
-        with engine.begin() as conn:
-            expense_scalar = pd.read_sql_query(text(expense_query), conn).iloc[0, 0]
-            total_expense = float(expense_scalar or 0.0)
+        expense_res = asyncio.run(async_read_sql_query(expense_query))
+        expense_scalar = expense_res.iloc[0, 0]
+        total_expense = float(expense_scalar or 0.0)
 
         income_query = """SELECT sum(amount) from transactions
                         where category = 'income' """
-        with engine.begin() as conn:
-            income_scalar = pd.read_sql_query(text(income_query), conn).iloc[0, 0]
-            total_income = float(income_scalar or 0.0)
+        income_res = asyncio.run(async_read_sql_query(income_query))
+        income_scalar = income_res.iloc[0, 0]
+        total_income = float(income_scalar or 0.0)
 
         return total_expense, total_income
 
@@ -283,15 +304,15 @@ class Budget:
                         AND strftime('%m', date) = :month
                         AND strftime('%Y', date) = :year
                         """
-        with engine.begin() as conn:
-            filtered_df = pd.read_sql_query(
-                text(sql_query),
+        filtered_df = asyncio.run(
+            async_read_sql_query(
+                sql_query,
                 params={
                     "month": f"{input_month:02d}",
                     "year": str(input_year),
                 },
-                con=conn,
             )
+        )
 
         if len(filtered_df) == 0:
             return None
@@ -324,12 +345,13 @@ class Budget:
                     AND date < :to_date
                     GROUP BY strftime('%Y-%m', date)
                     """
-        with engine.begin() as conn:
-            monthly = pd.read_sql_query(
-                text(sql_query),
+
+        monthly = asyncio.run(
+            async_read_sql_query(
+                sql_query,
                 params={"from_date": from_date_str, "to_date": to_date},
-                con=conn,
             )
+        )
 
         if len(monthly) == 0:
             return None
@@ -361,13 +383,12 @@ class Budget:
                     AND date < :to_date
                     GROUP BY strftime('%Y-%m', date), category = 'income'
                     """
-        with engine.begin() as conn:
-            monthly_income_spending = pd.read_sql_query(
-                text(sql_query),
-                params={"from_date": from_date_str, "to_date": to_date},
-                con=conn,
+        income_spending_df = asyncio.run(
+            async_read_sql_query(
+                sql_query, {"from_date": from_date_str, "to_date": to_date}
             )
+        )
 
-        if len(monthly_income_spending) == 0:
+        if len(income_spending_df) == 0:
             return None
-        return monthly_income_spending
+        return income_spending_df

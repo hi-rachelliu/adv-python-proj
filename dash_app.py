@@ -17,11 +17,11 @@ empty_fig.update_layout(
     yaxis={"visible": False},
     annotations=[
         {
-            "text": "Please add transactions for this month to see graphics",
+            "text": "Add transactions for this month to see graph",
             "xref": "paper",
             "yref": "paper",
             "showarrow": False,
-            "font": {"size": 16},
+            "font": {"size": 11},
         }
     ],
 )
@@ -36,57 +36,68 @@ def generate_empty_row(restart: bool = False) -> html.Div:
         global row_id
         row_id = 0
     return html.Div(
-        className="transaction-row",
         id={"type": "row", "index": row_id},
         children=[
-            html.Div(
+            dbc.Row(
                 [
-                    html.Label("Date"),
-                    dcc.DatePickerSingle(
-                        id={"type": "date-input", "index": row_id},
-                        date=datetime.today().strftime("%Y-%m-%d"),
+                    dbc.Col(
+                        [
+                            html.Label("Date"),
+                            dcc.DatePickerSingle(
+                                id={"type": "date-input", "index": row_id},
+                                date=datetime.today().strftime("%Y-%m-%d"),
+                            ),
+                        ]
                     ),
-                ]
-            ),
-            html.Div(
-                [
-                    html.Label("Amount (in dollars)"),
-                    dcc.Input(
-                        id={"type": "amount-input", "index": row_id},
-                        type="number",
-                        placeholder=12,
-                        required=True,
+                    dbc.Col(
+                        [
+                            html.Label("Amount (in dollars)"),
+                            dcc.Input(
+                                id={"type": "amount-input", "index": row_id},
+                                type="number",
+                                placeholder=12,
+                                required=True,
+                            ),
+                        ]
                     ),
-                ]
-            ),
-            html.Div(
-                [
-                    html.Label("Item"),
-                    dcc.Input(
-                        id={"type": "item-input", "index": row_id},
-                        type="text",
-                        placeholder="Pizza with friends",
-                        required=True,
+                    dbc.Col(
+                        [
+                            html.Label("Item"),
+                            dcc.Input(
+                                id={"type": "item-input", "index": row_id},
+                                type="text",
+                                placeholder="Pizza with friends",
+                                required=True,
+                            ),
+                        ]
                     ),
-                ]
-            ),
-            html.Div(
-                [
-                    html.Label("Category"),
-                    dcc.Dropdown(
-                        id={"type": "category-input", "index": row_id},
-                        options=[{"label": cat, "value": cat} for cat in CATEGORIES],
-                        placeholder="> Select",
+                    dbc.Col(
+                        [
+                            html.Label("Category"),
+                            dcc.Dropdown(
+                                id={"type": "category-input", "index": row_id},
+                                options=[
+                                    {"label": cat, "value": cat} for cat in CATEGORIES
+                                ],
+                                placeholder="> Select",
+                            ),
+                        ]
                     ),
-                ]
-            ),
-            html.Button(
-                "- Delete Row",
-                id={"type": "delete-row", "index": row_id},
-                n_clicks=0,
+                    dbc.Col(
+                        [
+                            html.Button(
+                                "- Delete Row",
+                                id={"type": "delete-row", "index": row_id},
+                                n_clicks=0,
+                            )
+                            if not restart
+                            else None,
+                        ],
+                        style={"marginTop": "25px"},
+                    ),
+                ],
+                style={"marginBottom": "10px"},
             )
-            if not restart
-            else None,
         ],
     )
 
@@ -99,7 +110,9 @@ def transaction_elements() -> list[Component]:
         html.H2("enter data:", style={"marginTop": "20px"}),
         html.P("Enter a new transaction below"),
         html.Div(children=[generate_empty_row(restart=True)], id="rows"),
-        html.Button("+ Add Row", id="add-row-button", n_clicks=0),
+        html.Button(
+            "+ Add Row", id="add-row-button", n_clicks=0, style={"marginTop": "10px"}
+        ),
         html.Button(
             "Submit",
             id="transaction-submit",
@@ -173,12 +186,11 @@ def pie_chart_elements() -> list[Component]:
     Returns a list of HTML elements, for rendering the spending categories pie chart
     """
     return [
-        html.H2(
-            "spendings by categories for a particular month",
-            style={"marginTop": "20px"},
-        ),
+        html.H2("spending by category"),
         dmc.MonthPickerInput(
-            label="Pick a month:", placeholder="Select month", id="month-picker"
+            label="Pick a month:",
+            placeholder="Select month",
+            id="month-picker",
         ),
         html.Div(id="summary-pie"),
         dcc.Graph(id="pie-chart", style={"marginBottom": "20px"}),
@@ -191,6 +203,7 @@ def spending_chart_elements() -> list[Component]:
     bar chart
     """
     return [
+        html.H2("spending (months)"),
         dmc.MonthPickerInput(
             type="range",
             id="spending-range",
@@ -208,6 +221,7 @@ def spending_income_chart_elements() -> list[Component]:
     spending bar chart
     """
     return [
+        html.H2("income vs. spending (months)"),
         dmc.MonthPickerInput(
             type="range",
             id="spending-income-range",
@@ -225,12 +239,24 @@ app.layout = dmc.MantineProvider(
             html.H1("my budget app/data"),
             *transaction_elements(),
             *from_csv_elements(),
-            html.H1("my budget app/summary"),
-            *pie_chart_elements(),
-            html.H2("spending, month to month"),
-            *spending_chart_elements(),
-            html.H2("income vs. spending, month to month"),
-            *spending_income_chart_elements(),
+            html.H1(
+                "my budget app/summary",
+                style={"marginBottom": "20px"},
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.Div(
+                            children=[*pie_chart_elements()],
+                        ),
+                        md=4,
+                    ),
+                    dbc.Col(html.Div(children=[*spending_chart_elements()]), md=4),
+                    dbc.Col(
+                        html.Div(children=[*spending_income_chart_elements()]), md=4
+                    ),
+                ]
+            ),
         ],
         style={"marginLeft": "20px"},
     )
@@ -379,7 +405,6 @@ def update_dataframe(
         )
 
     else:
-        print(triggered_id)
         # delete a row
         row_to_delete = triggered_id["index"]
         updated_rows = [
