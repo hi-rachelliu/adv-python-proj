@@ -97,4 +97,4 @@ return True
 
 In `from_csv()` and `add_transaction()`, added validation based on his feedback: error catching empty strings in values.
 
-Combine similar validation from code from `from_csv()` and `add_transaction()` into \_validate_rows static method, as per his suggestion.
+Combine similar validation from code from `from_csv()` and `add_transaction()` into \_validate_df static method, as per his suggestion.
