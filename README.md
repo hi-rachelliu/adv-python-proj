@@ -4,7 +4,7 @@ Welcome to my budget app! This budget app allows you to manually transactions or
 
 # Getting Set Up
 
-After cloning this Github repo, run 'uv sync'. This should download all the project dependencies.
+After cloning this Github repo, run `uv sync` (make sure you have uv). This should download all the project dependencies.
 
 To run the app locally, use `uv run dash_app.py`.
 
@@ -33,4 +33,4 @@ They include:
 - `invalid_categories.csv`
 - `invalid_uneven_rows.csv`
 
-All invalid CSVs will raise an error in the budget app, and are prefaced with `invalid_`. All other files are valid. The titles are also descriptive of how each CSV is different.
+All invalid CSVs will raise an error in the budget app, and are prefaced with `invalid_`. All other files are valid. The titles are also descriptive of how each CSV is different. Feel free to use them as you explore the app!
