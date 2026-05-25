@@ -107,6 +107,7 @@ def transaction_elements() -> list[Component]:
     Returns a list of HTML elements, for rendering transaction data entry
     """
     return [
+        html.Div(id="dummy-data"),
         html.H2("enter data:", style={"marginTop": "20px"}),
         html.P("Enter a new transaction below"),
         html.Div(children=[generate_empty_row(restart=True)], id="rows"),
@@ -135,7 +136,7 @@ def from_csv_elements() -> list[Component]:
     Returns a list of HTML elements, for rendering the import csv section
     """
     return [
-        html.H2("or export from csv:"),
+        html.H2("or import from csv:"),
         html.P(html.Strong("This overwrites any existing transactions!")),
         html.P("File requirements for your CSV: "),
         html.Ul(
@@ -304,6 +305,22 @@ def generate_expenses_incomes_output(budget: Budget):
     return expenses_output, incomes_output
 
 
+# On startup, populates expenses and incomes with persisted sqlite data
+# Runs only once on startup
+@app.callback(
+    [
+        Output("df-expenses", "children", allow_duplicate=True),
+        Output("df-incomes", "children", allow_duplicate=True),
+    ],
+    Input("dummy-data", "children"),
+    prevent_initial_call="initial_duplicate",
+)
+def on_startup_populate_expenses_incomes_table(_):
+    budget = Budget()
+    expenses_output, incomes_output = generate_expenses_incomes_output(budget)
+    return expenses_output, incomes_output
+
+
 @app.callback(
     [
         Output("df-expenses", "children"),
@@ -460,6 +477,7 @@ def generate_pie(input_month):
     return fig, summary
 
 
+# generates the spending chart
 @app.callback(
     Output("spending-chart", "figure"),
     Output("summary-spending", "children"),
@@ -488,6 +506,7 @@ def generate_spending_chart(months_range):
     return fig, html.Div()
 
 
+# generates the spending income chart
 @app.callback(
     Output("spending-income-chart", "figure"),
     Output("summary-spending-income", "children"),
