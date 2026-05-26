@@ -435,15 +435,21 @@ def update_dataframe(
     Output("pie-chart", "figure"),
     Output("summary-pie", "children"),
     Input("month-picker", "value"),
+    Input("transaction-submit", "n_clicks"),
+    Input("upload-csv-submit", "n_clicks"),
 )
-def generate_pie(input_month):
+def generate_pie(input_month, _1, _2):
 
+    triggered_id = ctx.triggered_id
     if input_month is None:
         # if inputs are empty, return an empty graph with a note to add transactions
         fig = empty_fig
         summary = html.Div()
 
     else:
+        if triggered_id == "transaction-submit" or triggered_id == "upload-csv-submit":
+            return empty_fig, html.Div()
+
         # if inputs are both valid, use inputs to return a summary and pie chart
         budget = Budget()
         input_date = datetime.strptime(input_month, "%Y-%m-%d")
@@ -482,12 +488,18 @@ def generate_pie(input_month):
     Output("spending-chart", "figure"),
     Output("summary-spending", "children"),
     Input("spending-range", "value"),
+    Input("transaction-submit", "n_clicks"),
+    Input("upload-csv-submit", "n_clicks"),
 )
-def generate_spending_chart(months_range):
+def generate_spending_chart(months_range, _1, _2):
 
+    triggered_id = ctx.triggered_id
     budget = Budget()
     # if the months range and the dataframe both have data
     if months_range and budget.df is not None and None not in months_range:
+        if triggered_id == "transaction-submit" or triggered_id == "upload-csv-submit":
+            return empty_fig, html.Div()
+
         # months_range should be a list of 2 values
         from_date_str, to_date_str = months_range
 
@@ -508,16 +520,26 @@ def generate_spending_chart(months_range):
 
 # generates the spending income chart
 @app.callback(
-    Output("spending-income-chart", "figure"),
-    Output("summary-spending-income", "children"),
-    Input("spending-income-range", "value"),
+    [
+        Output("spending-income-chart", "figure"),
+        Output("summary-spending-income", "children"),
+    ],
+    [
+        Input("spending-income-range", "value"),
+        Input("transaction-submit", "n_clicks"),
+        Input("upload-csv-submit", "n_clicks"),
+    ],
 )
-def generate_spending_income_chart(months_range):
+def generate_spending_income_chart(months_range, _1, _2):
 
+    triggered_id = ctx.triggered_id
     # if the months range and the dataframe both have data
     budget = Budget()
 
     if months_range and budget.df is not None and None not in months_range:
+        if triggered_id == "transaction-submit" or triggered_id == "upload-csv-submit":
+            return empty_fig, html.Div()
+
         # months_range should be a list of 2 values
         from_date_str, to_date_str = months_range
 
