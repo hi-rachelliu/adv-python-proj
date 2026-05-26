@@ -1,4 +1,4 @@
-## README
+# README
 
 Welcome to my budget app! This budget app allows you to manually transactions or import them from a CSV file, then see pie charts and bar charts that summarize your spending and income.
 
