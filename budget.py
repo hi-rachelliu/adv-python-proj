@@ -7,6 +7,7 @@ import io
 from typing import Literal, Any
 from pathlib import Path
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine.base import Engine
 import asyncio
 
 JsonFrameOrient = Literal["split", "records", "index", "columns", "values", "table"]
@@ -26,7 +27,7 @@ def setup_db():
         connection.executescript(schema_sql)
 
 
-def sync_df_to_sql(df: pd.DataFrame) -> None:
+def sync_df_to_sql(df: pd.DataFrame, engine: Engine) -> None:
     """
     Sync code: Tries persisting a dataframe to the sqlite database,
     replacing any current data. Raises Exception if it fails
@@ -43,15 +44,15 @@ def sync_df_to_sql(df: pd.DataFrame) -> None:
         raise Exception(f"Error persisting df to sqlite3: {e}")
 
 
-async def async_df_to_sql(df: pd.DataFrame) -> None:
+async def async_df_to_sql(df: pd.DataFrame, engine: Engine) -> None:
     """
     Async code: persists dataframe to sqlite
     """
-    return await asyncio.to_thread(sync_df_to_sql, df)
+    return await asyncio.to_thread(sync_df_to_sql, df, engine)
 
 
 def sync_read_sql_query(
-    sql_query: str, params: dict[str, Any] | None = None
+    sql_query: str, engine: Engine, params: dict[str, Any] | None = None
 ) -> pd.DataFrame:
     """
     Sync code: Tries to read from sqlite database into a dataframe.
@@ -66,12 +67,29 @@ def sync_read_sql_query(
 
 
 async def async_read_sql_query(
-    sql_query: str, params: dict[str, Any] | None = None
+    sql_query: str, engine: Engine, params: dict[str, Any] | None = None
 ) -> pd.DataFrame:
     """
     Async code: reads from sqlite, returns df with sqlite data
     """
-    return await asyncio.to_thread(sync_read_sql_query, sql_query, params)
+    return await asyncio.to_thread(sync_read_sql_query, sql_query, engine, params)
+
+
+def rollover_date(date_str: str) -> str:
+    """
+    Takes a date as a str (YYYY-MM-DD) and rolls it over to the first day of
+    the next month. Returns it as a date str (YYYY-MM-DD).
+
+    "2026-05-01" -> "2026-06-01"
+    "2026-05-27" -> "2026-06-01"
+    "2026-12-07" -> "2027-01-01"
+    """
+    date = datetime.strptime(date_str, "%Y-%m-%d")
+    if date.month == 12:
+        next_date = datetime(year=date.year + 1, month=1, day=1)
+    else:
+        next_date = datetime(year=date.year, month=date.month + 1, day=1)
+    return datetime.strftime(next_date, "%Y-%m-%d")
 
 
 # ////////////////////////////////////////////////////////////////////////
@@ -87,13 +105,27 @@ class SQLiteError(Exception):
 
 class Budget:
     @staticmethod
-    def _validate_rows(df: pd.DataFrame) -> pd.DataFrame:
+    def csv_to_df(
+        file_or_buffer: str,
+    ) -> pd.DataFrame:
+        """
+        Helper function: reads csv file and returns a df
+        """
+        read_df = pd.read_csv(
+            file_or_buffer, sep=r"[,;\t`]", engine="python", encoding="utf-8-sig"
+        )
+        read_df.columns = read_df.columns.str.lower()
+        read_df.columns = read_df.columns.str.strip()
+        return read_df
+
+    @staticmethod
+    def _validate_df(df: pd.DataFrame) -> pd.DataFrame:
         """
         Validates that for an input `df`:
         - all required columns are included
         - there are no empty strings in any of the required columns
         - there are no NaN values in any of the required columns
-        - amounts are (or can be coerced into) floats
+        - amounts are (or can be coerced into) positive floats
         - categories are only: "Groceries", "Food", "Housing", "Utilities", "Gifts", "Travel", "Income", or "Other"
         - dates are valid (can be coerced into datetime objects)
         """
@@ -185,21 +217,22 @@ class Budget:
         except Exception as e:
             raise Exception(f"There was an error processing this file: {e}")
 
-        df = Budget._validate_rows(read_df)
+        df = Budget._validate_df(read_df)
         budget = Budget(df)
 
         return budget
 
-    def __init__(self, df: pd.DataFrame | None = None) -> None:
+    def __init__(self, df: pd.DataFrame | None = None, eng: Engine = engine) -> None:
+        self.engine = eng
         if df is None:
-            read_df = pd.read_sql("SELECT * FROM transactions", engine)
-            self.df = Budget._validate_rows(read_df)
+            read_df = pd.read_sql("SELECT * FROM transactions", self.engine)
+            self.df = Budget._validate_df(read_df)
         else:
             try:
                 self.df = df
             except Exception as e:
                 raise Exception(f"Error normalizing df: {e}")
-            asyncio.run(async_df_to_sql(self.df))
+            asyncio.run(async_df_to_sql(self.df, self.engine))
 
     def add_transactions(
         self,
@@ -207,18 +240,11 @@ class Budget:
         amounts: list[str],
         items: list[str],
         categories: list[str],
-    ) -> bool:
+    ):
         """
-        Validates and adds multiple transactions into the database, returns a
-        bool, whether or not the concatenation succeeded.
+        Validates and adds multiple transactions into the database.
+        Raises Exception if the transactions are not valid
         """
-
-        for inputs in (dates, amounts, items, categories):
-            if None in inputs or "" in inputs:
-                raise Exception(
-                    "Validation Error: check that your inputs are not empty. "
-                    "Please fill out or delete any rows with empty inputs."
-                )
 
         # make a df from the columns and validate it
         try:
@@ -230,14 +256,13 @@ class Budget:
                     "category": categories,
                 }
             )
-            new_rows = Budget._validate_rows(unvalidated_rows)
+            new_rows = Budget._validate_df(unvalidated_rows)
         except Exception as e:
             raise Exception(f"{e}")
 
         # persist the new df into sqlite
         self.df = pd.concat([self.df, new_rows], ignore_index=True)
-        asyncio.run(async_df_to_sql(self.df))
-        return True
+        asyncio.run(async_df_to_sql(self.df, self.engine))
 
     def get_all_expenses(self) -> pd.DataFrame | None:
         """
@@ -249,7 +274,7 @@ class Budget:
 
         sql_query = """SELECT * from transactions
                     where category != 'income' """
-        df_expenses = asyncio.run(async_read_sql_query(sql_query))
+        df_expenses = asyncio.run(async_read_sql_query(sql_query, self.engine))
 
         df_expenses["date"] = pd.to_datetime(df_expenses["date"]).dt.strftime(
             "%Y-%m-%d"
@@ -259,13 +284,13 @@ class Budget:
 
     def get_all_incomes(self) -> pd.DataFrame | None:
         """
-        gets all incomes from the database, can filter by start and end dates.
+        gets all incomes from the database.
         Returns None if the database is empty.
         """
 
         sql_query = """SELECT * from transactions
                     where category == 'income' """
-        df_incomes = asyncio.run(async_read_sql_query(sql_query))
+        df_incomes = asyncio.run(async_read_sql_query(sql_query, self.engine))
 
         df_incomes["date"] = pd.to_datetime(df_incomes["date"]).dt.strftime("%Y-%m-%d")
 
@@ -277,13 +302,13 @@ class Budget:
         """
         expense_query = """SELECT sum(amount) from transactions
                         where category <> 'income' """
-        expense_res = asyncio.run(async_read_sql_query(expense_query))
+        expense_res = asyncio.run(async_read_sql_query(expense_query, self.engine))
         expense_scalar = expense_res.iloc[0, 0]
         total_expense = float(expense_scalar or 0.0)
 
         income_query = """SELECT sum(amount) from transactions
                         where category = 'income' """
-        income_res = asyncio.run(async_read_sql_query(income_query))
+        income_res = asyncio.run(async_read_sql_query(income_query, self.engine))
         income_scalar = income_res.iloc[0, 0]
         total_income = float(income_scalar or 0.0)
 
@@ -307,6 +332,7 @@ class Budget:
         filtered_df = asyncio.run(
             async_read_sql_query(
                 sql_query,
+                self.engine,
                 params={
                     "month": f"{input_month:02d}",
                     "year": str(input_year),
@@ -328,15 +354,7 @@ class Budget:
 
         Feeds into the spending, month to month chart
         """
-        to_date_end = datetime.strptime(to_date_str, "%Y-%m-%d")
-        if to_date_end.month == 12:
-            to_date_next_day = datetime(year=to_date_end.year + 1, month=1, day=1)
-        else:
-            to_date_next_day = datetime(
-                year=to_date_end.year, month=to_date_end.month + 1, day=1
-            )
-
-        to_date = datetime.strftime(to_date_next_day, "%Y-%m-%d")
+        to_date = rollover_date(to_date_str)
 
         sql_query = """SELECT strftime('%Y-%m', date) AS date, sum(amount) AS amount 
                     FROM transactions
@@ -349,6 +367,7 @@ class Budget:
         monthly = asyncio.run(
             async_read_sql_query(
                 sql_query,
+                self.engine,
                 params={"from_date": from_date_str, "to_date": to_date},
             )
         )
@@ -365,15 +384,8 @@ class Budget:
 
         Feeds into the income vs. spending, month to month chart
         """
-        to_date_end = datetime.strptime(to_date_str, "%Y-%m-%d")
-        if to_date_end.month == 12:
-            to_date_next_day = datetime(year=to_date_end.year + 1, month=1, day=1)
-        else:
-            to_date_next_day = datetime(
-                year=to_date_end.year, month=to_date_end.month + 1, day=1
-            )
 
-        to_date = datetime.strftime(to_date_next_day, "%Y-%m-%d")
+        to_date = rollover_date(to_date_str)
 
         sql_query = """SELECT strftime('%Y-%m', date) AS date, 
                     sum(amount) AS amount,
@@ -385,7 +397,7 @@ class Budget:
                     """
         income_spending_df = asyncio.run(
             async_read_sql_query(
-                sql_query, {"from_date": from_date_str, "to_date": to_date}
+                sql_query, self.engine, {"from_date": from_date_str, "to_date": to_date}
             )
         )
 
